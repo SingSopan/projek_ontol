@@ -1,7 +1,29 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:hive/hive.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:fl_chart/fl_chart.dart';
 
-void main() {
+part 'main.g.dart';
+
+@HiveType(typeId: 0)
+class Candidate extends HiveObject {
+  @HiveField(0)
+  String name;
+
+  @HiveField(1)
+  int vote;
+
+  Candidate({required this.name, required this.vote});
+}
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final appDocumentDir = await getApplicationDocumentsDirectory();
+  Hive.init(appDocumentDir.path);
+  Hive.registerAdapter(CandidateAdapter());
+  await Hive.openBox<Candidate>('candidates');
   runApp(const MyApp());
 }
 
@@ -28,21 +50,16 @@ class MyHomePage extends StatefulWidget {
   State<MyHomePage> createState() => _MyHomePageState();
 }
 
-class Candidate {
-  String name;
-  int vote;
-  Candidate({required this.name, required this.vote});
-}
-
 class _MyHomePageState extends State<MyHomePage> {
   int _counter = 0;
-  List<Candidate> candidates = [
-    Candidate(name: "Anies", vote: 0),
-    Candidate(name: "Ganjar", vote: 0),
-    Candidate(name: "Prabowo", vote: 0),
-  ];
-
   final TextEditingController nameController = TextEditingController();
+  late Box<Candidate> candidateBox;
+
+  @override
+  void initState() {
+    super.initState();
+    candidateBox = Hive.box<Candidate>('candidates');
+  }
 
   void _incrementCounter() {
     setState(() {
@@ -57,31 +74,38 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   void _addCandidate(String name) {
-    setState(() {
-      candidates.add(Candidate(name: name, vote: 0));
-    });
+    final newCandidate = Candidate(name: name, vote: 0);
+    candidateBox.add(newCandidate);
+    setState(() {});
   }
 
   void _updateCandidate(int index, String name) {
-    setState(() {
-      candidates[index].name = name;
-    });
+    final candidate = candidateBox.getAt(index);
+    if (candidate != null) {
+      candidate.name = name;
+      candidate.save();
+      setState(() {});
+    }
   }
 
   void _deleteCandidate(int index) {
-    setState(() {
-      candidates.removeAt(index);
-    });
+    candidateBox.deleteAt(index);
+    setState(() {});
   }
 
   void _voteCandidate(int index) {
-    setState(() {
-      candidates[index].vote++;
-    });
+    final candidate = candidateBox.getAt(index);
+    if (candidate != null) {
+      candidate.vote += 1;
+      candidate.save();
+      setState(() {});
+    }
   }
 
   void _showEditDialog(int index) {
-    nameController.text = candidates[index].name;
+    final candidate = candidateBox.getAt(index);
+    if (candidate == null) return;
+    nameController.text = candidate.name;
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
@@ -143,7 +167,7 @@ class _MyHomePageState extends State<MyHomePage> {
       body: Container(
         decoration: const BoxDecoration(
           image: DecorationImage(
-            image: AssetImage("assets/pdd.jpeg"),
+            image: AssetImage("assets/bokbok.jpg"),
             fit: BoxFit.cover,
           ),
         ),
@@ -197,35 +221,65 @@ class _MyHomePageState extends State<MyHomePage> {
                   'List Orang penting:',
                   style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                 ),
-                ListView.builder(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  itemCount: candidates.length,
-                  itemBuilder: (context, index) {
-                    return Card(
-                      margin: const EdgeInsets.symmetric(
-                          horizontal: 20, vertical: 5),
-                      child: ListTile(
-                        title: Text(candidates[index].name),
-                        subtitle: Text('Total Sogokan: ${candidates[index].vote}'),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            IconButton(
-                              icon: const Icon(Icons.how_to_vote),
-                              onPressed: () => _voteCandidate(index),
+                Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: SizedBox(
+                    height: 200,
+                    child: ValueListenableBuilder(
+                      valueListenable: candidateBox.listenable(),
+                      builder: (context, Box<Candidate> box, _) {
+                        if (box.isEmpty) return const Text("No data");
+                        final totalVotes = box.values.fold<int>(0, (sum, c) => sum + c.vote);
+                        return PieChart(
+                          PieChartData(
+                            sections: box.values.map((candidate) {
+                              final percent = totalVotes == 0 ? 0 : candidate.vote / totalVotes * 100;
+                              return PieChartSectionData(
+                                value: candidate.vote.toDouble(),
+                                title: '${candidate.name} (${percent.toStringAsFixed(1)}%)',
+                              );
+                            }).toList(),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+                ValueListenableBuilder(
+                  valueListenable: candidateBox.listenable(),
+                  builder: (context, Box<Candidate> box, _) {
+                    return ListView.builder(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: box.length,
+                      itemBuilder: (context, index) {
+                        final candidate = box.getAt(index);
+                        if (candidate == null) return const SizedBox.shrink();
+                        return Card(
+                          margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 5),
+                          child: ListTile(
+                            title: Text(candidate.name),
+                            subtitle: Text('Total Sogokan: ${candidate.vote}'),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  icon: const Icon(Icons.how_to_vote),
+                                  onPressed: () => _voteCandidate(index),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.edit),
+                                  onPressed: () => _showEditDialog(index),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.delete),
+                                  onPressed: () => _deleteCandidate(index),
+                                ),
+                              ],
                             ),
-                            IconButton(
-                              icon: const Icon(Icons.edit),
-                              onPressed: () => _showEditDialog(index),
-                            ),
-                            IconButton(
-                              icon: const Icon(Icons.delete),
-                              onPressed: () => _deleteCandidate(index),
-                            ),
-                          ],
-                        ),
-                      ),
+                          ),
+                        );
+                      },
                     );
                   },
                 ),
